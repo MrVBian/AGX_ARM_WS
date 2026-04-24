@@ -22,7 +22,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "std_msgs/msg/header.hpp"
-
+#include "sensor_msgs/msg/joint_state.hpp"  // 添加 JointState 头文件
 
 #include <filesystem>
 
@@ -212,7 +212,8 @@ public:
   XRNode() : Node("xr_publisher")
   {
     publisher_ = this->create_publisher<xr_msgs::msg::Custom>("xr_pose", 10);
-    pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
+    // 修改：将 pose_publisher_ 改为 joint_publisher_
+    joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/control/move_j", 10);
 
     // 尝试加载 URDF 并构建 pinocchio 模型（仅一次）
     namespace fs = std::filesystem;
@@ -227,6 +228,11 @@ public:
         data_ptr_ = std::make_unique<Data>(*model_ptr_);
         model_loaded_ = true;
         RCLCPP_INFO(this->get_logger(), "Loaded URDF: %s  model.nq=%d nv=%d", urdf_filename.c_str(), model_ptr_->nq, model_ptr_->nv);
+        
+        // // 记录关节名称
+        // for (int i = 0; i < model_ptr_->njoints; ++i) {
+        //   RCLCPP_INFO(this->get_logger(), "Joint %d: %s", i, model_ptr_->names[i].c_str());
+        // }
       } catch (const std::exception & e) {
         RCLCPP_ERROR(this->get_logger(), "Failed to build pinocchio model: %s", e.what());
         model_loaded_ = false;
@@ -314,8 +320,36 @@ public:
     return res;
   }
 
+  // 获取活动关节的索引
+  std::vector<int> getActiveJointIndices(const Model& model) {
+    std::vector<int> active_joint_indices;
+    for (int i = 0; i < model.njoints; ++i) {
+      // 跳过固定关节（通常索引0是固定关节）
+      if (model.joints[i].nq() > 0 && i > 0) {  // 通常索引0是root关节
+        active_joint_indices.push_back(i);
+      }
+    }
+    return active_joint_indices;
+  }
+
   // 异步 IK 工作线程：等待最新目标，使用 model_ptr_ 和 data_ptr_ 求解，使用 warm start
   void ikWorkerLoop() {
+    // 获取活动关节索引
+    std::vector<int> active_joint_indices;
+    std::vector<std::string> active_joint_names;
+    if (model_loaded_ && model_ptr_) {
+      active_joint_indices = getActiveJointIndices(*model_ptr_);
+      for (int idx : active_joint_indices) {
+        active_joint_names.push_back(model_ptr_->names[idx]);
+      }
+      // RCLCPP_INFO(this->get_logger(), "Active joints: %d joints", active_joint_indices.size());
+      // for (size_t i = 0; i < active_joint_indices.size(); ++i) {
+      //   RCLCPP_INFO(this->get_logger(), "  Joint %d: %s (nq=%d)", 
+      //              active_joint_indices[i], active_joint_names[i].c_str(),
+      //              model_ptr_->joints[active_joint_indices[i]].nq());
+      // }
+    }
+    
     while (ik_thread_running_.load()) {
       std::unique_lock<std::mutex> lk(ik_mutex_);
       // 等待被通知或每 100ms 超时检查一次（避免永久阻塞）
@@ -351,8 +385,45 @@ public:
           std::lock_guard<std::mutex> lg(last_solution_mutex_);
           last_solution_ = ikres.q;
         }
-        RCLCPP_INFO(this->get_logger(), "Async IK converged iters=%d", ikres.iterations);
-        // TODO: 在这里发布 joint command 或者其它处理（通过 ROS 发布器）
+        // RCLCPP_INFO(this->get_logger(), "Async IK converged iters=%d", ikres.iterations);
+        
+        // 发布关节状态消息
+        auto joint_msg = std::make_unique<sensor_msgs::msg::JointState>();
+        joint_msg->header.stamp = this->now();
+        joint_msg->header.frame_id = "base_link";
+        
+        // 从 q 向量中提取活动关节的值
+        for (size_t i = 0; i < active_joint_indices.size(); ++i) {
+          int joint_idx = active_joint_indices[i];
+          int q_idx = model_ptr_->idx_qs[joint_idx];
+          
+          // 获取关节名称
+          joint_msg->name.push_back(active_joint_names[i]);
+          
+          // 获取关节位置
+          joint_msg->position.push_back(ikres.q[q_idx]);
+          
+          // // 速度和力
+          // joint_msg->velocity.push_back(0.0);
+          // joint_msg->effort.push_back(0.0);
+        }
+        
+        // 发布关节状态
+        joint_publisher_->publish(std::move(joint_msg));
+        
+        // 创建详细的关节值字符串
+        std::stringstream joint_values_ss;
+        joint_values_ss << "Published joint states (" << active_joint_indices.size() << " joints): ";
+        for (size_t i = 0; i < active_joint_indices.size(); ++i) {
+          int joint_idx = active_joint_indices[i];
+          int q_idx = model_ptr_->idx_qs[joint_idx];
+          joint_values_ss << active_joint_names[i] << "=" << std::fixed << std::setprecision(4) << ikres.q[q_idx];
+          if (i < active_joint_indices.size() - 1) {
+            joint_values_ss << ", ";
+          }
+        }
+        RCLCPP_INFO(this->get_logger(), "%s", joint_values_ss.str().c_str());
+        
       } else {
         RCLCPP_DEBUG(this->get_logger(), "Async IK failed iters=%d", ikres.iterations);
       }
@@ -449,27 +520,6 @@ public:
             // // XR
             publisher_->publish(custom_msg);
 
-
-            // 只有在左手柄被按下（trigger == 1）时才发布 PoseStamped
-            // if (custom_msg.left_controller.trigger == 1.0f) {
-            //   geometry_msgs::msg::PoseStamped ps;
-            //   ps.header.stamp = this->now();
-            //   ps.header.frame_id = "Pico";
-            //   ps.pose.position.x = custom_msg.left_controller.pose[0];
-            //   ps.pose.position.y = custom_msg.left_controller.pose[1];
-            //   ps.pose.position.z = custom_msg.left_controller.pose[2];
-            //   ps.pose.orientation.x = custom_msg.left_controller.pose[3];
-            //   ps.pose.orientation.y = custom_msg.left_controller.pose[4];
-            //   ps.pose.orientation.z = custom_msg.left_controller.pose[5];
-            //   ps.pose.orientation.w = custom_msg.left_controller.pose[6];
-            //   pose_publisher_->publish(ps);
-            //   RCLCPP_INFO(this->get_logger(), "Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
-            //     custom_msg.left_controller.pose[0], custom_msg.left_controller.pose[1],
-            //     custom_msg.left_controller.pose[2], custom_msg.left_controller.pose[3],
-            //     custom_msg.left_controller.pose[4], custom_msg.left_controller.pose[5],
-            //     custom_msg.left_controller.pose[6]
-            //   );
-            // }
             if (custom_msg.left_controller.trigger == 1.0f) {
               geometry_msgs::msg::PoseStamped ps;
               ps.header.stamp = this->now();
@@ -489,14 +539,14 @@ public:
               ps.pose.orientation.y = static_cast<float>(qconv[1]);
               ps.pose.orientation.z = static_cast<float>(qconv[2]);
               ps.pose.orientation.w = static_cast<float>(qconv[3]);
-              pose_publisher_->publish(ps);
+              
               RCLCPP_INFO(this->get_logger(), "Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
                 ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
                 ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
                 ps.pose.orientation.w
               );
 
-              // 求逆解！！！  <-- 在这里集成 IK 求解
+              // 求逆解
               if (model_loaded_ && model_ptr_) {
                 try {
                   // 构建目标 SE3（注意 Eigen 四元数构造顺序：w,x,y,z）
@@ -542,7 +592,8 @@ public:
 
 private:
   rclcpp::Publisher<xr_msgs::msg::Custom>::SharedPtr publisher_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_publisher_;
+  // 修改：将 pose_publisher_ 改为 joint_publisher_
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_publisher_;
 
   // pinocchio 模型（可选）
   std::unique_ptr<Model> model_ptr_;

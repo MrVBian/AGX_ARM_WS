@@ -12,6 +12,7 @@ message(STATUS "OS_PLATFORM: ${ISA_NAME}")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(xr_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -40,6 +41,7 @@ target_compile_features(talker PUBLIC cxx_std_17)
 ament_target_dependencies(talker
   rclcpp
   std_msgs
+  sensor_msgs
   xr_msgs
   geometry_msgs
   tf2
