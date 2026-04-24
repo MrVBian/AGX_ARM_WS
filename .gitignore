@@ -1,0 +1,57 @@
+# 构建相关目录
+build/
+install/
+log/
+
+# 编译生成文件
+*.pyc
+*~
+*.lo
+*.la
+*.o
+*.a
+*.so
+*.so.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.pytest_cache/
+
+# 开发环境
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ROS 2 特定
+*.msg
+*.srv
+*.action
+*_msgs/
+package.xml.bak
+setup.py.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+*.jou
+
+# 临时文件
+*.tmp
+*.temp
+
+# 备份文件
+*.bak
+*.backup
+
+# 测试相关
+test_results/
+coverage/
+.coverage
