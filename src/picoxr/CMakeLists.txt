@@ -16,6 +16,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(xr_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
+set(COAL_DISABLE_HPP_FCL_WARNINGS ON)
 find_package(pinocchio REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -37,6 +38,8 @@ FetchContent_MakeAvailable(json)
 
 add_executable(talker src/publisher.cpp)
 target_compile_features(talker PUBLIC cxx_std_17)
+
+target_compile_definitions(talker PRIVATE COAL_DISABLE_HPP_FCL_WARNINGS)
 
 ament_target_dependencies(talker
   rclcpp

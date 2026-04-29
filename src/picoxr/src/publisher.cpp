@@ -26,6 +26,9 @@
 
 #include <filesystem>
 
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+
 #include "pinocchio/parsers/urdf.hpp"
 #include "pinocchio/algorithm/joint-configuration.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
@@ -114,98 +117,6 @@ std::vector<float> stringToFloatVector(const std::string& input) {
     return result;
 }
 
-///
-/// 坐标系转换
-///
-// 新增：四元数/矩阵辅助函数，用于坐标系基变换（R' = M * R * M^T），保持物体朝向不变只是改表示基底
-static std::array<double,9> quatToMat(double x, double y, double z, double w) {
-  std::array<double,9> R;
-  double xx = x*x, yy = y*y, zz = z*z;
-  double xy = x*y, xz = x*z, xw = x*w, yz = y*z, yw = y*w, zw = z*w;
-  R[0] = 1.0 - 2.0*(yy + zz);
-  R[1] = 2.0*(xy - zw);
-  R[2] = 2.0*(xz + yw);
-  R[3] = 2.0*(xy + zw);
-  R[4] = 1.0 - 2.0*(xx + zz);
-  R[5] = 2.0*(yz - xw);
-  R[6] = 2.0*(xz - yw);
-  R[7] = 2.0*(yz + xw);
-  R[8] = 1.0 - 2.0*(xx + yy);
-  return R;
-}
-
-static std::array<double,9> changeBasis_M_R_Mt(const std::array<double,9>& R) {
-  // M 定义：target_x = -original_z; target_y = original_x; target_z = original_y
-  // 即 M = [[0,0,-1],[1,0,0],[0,1,0]]
-  const double M[3][3] = {{0,0,-1},{1,0,0},{0,1,0}};
-  std::array<double,9> tmp{};
-  // tmp = M * R
-  for (int i=0;i<3;++i) for (int j=0;j<3;++j) {
-    double s = 0.0;
-    for (int k=0;k<3;++k) s += M[i][k] * R[k*3 + j];
-    tmp[i*3 + j] = s;
-  }
-  std::array<double,9> R2{};
-  // R2 = tmp * M^T
-  for (int i=0;i<3;++i) for (int j=0;j<3;++j) {
-    double s = 0.0;
-    for (int k=0;k<3;++k) s += tmp[i*3 + k] * M[j][k];
-    R2[i*3 + j] = s;
-  }
-  return R2;
-}
-
-static std::array<double,4> matToQuat(const std::array<double,9>& R) {
-  std::array<double,4> q; // x,y,z,w
-  double trace = R[0] + R[4] + R[8];
-  if (trace > 0.0) {
-    double s = 0.5 / std::sqrt(trace + 1.0);
-    q[3] = 0.25 / s;
-    q[0] = (R[7] - R[5]) * s;
-    q[1] = (R[2] - R[6]) * s;
-    q[2] = (R[3] - R[1]) * s;
-  } else {
-    if (R[0] > R[4] && R[0] > R[8]) {
-      double s = 2.0 * std::sqrt(1.0 + R[0] - R[4] - R[8]);
-      q[3] = (R[7] - R[5]) / s;
-      q[0] = 0.25 * s;
-      q[1] = (R[1] + R[3]) / s;
-      q[2] = (R[2] + R[6]) / s;
-    } else if (R[4] > R[8]) {
-      double s = 2.0 * std::sqrt(1.0 + R[4] - R[0] - R[8]);
-      q[3] = (R[2] - R[6]) / s;
-      q[0] = (R[1] + R[3]) / s;
-      q[1] = 0.25 * s;
-      q[2] = (R[5] + R[7]) / s;
-    } else {
-      double s = 2.0 * std::sqrt(1.0 + R[8] - R[0] - R[4]);
-      q[3] = (R[3] - R[1]) / s;
-      q[0] = (R[2] + R[6]) / s;
-      q[1] = (R[5] + R[7]) / s;
-      q[2] = 0.25 * s;
-    }
-  }
-  // 归一化以避免数值误差
-  double norm = std::sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
-  if (norm > 0.0) {
-    q[0] /= norm; q[1] /= norm; q[2] /= norm; q[3] /= norm;
-  }
-  return q;
-}
-
-// 将 controller 四元数 (x,y,z,w) 从 controller 坐标系变换到 ps 所用坐标系
-static std::array<double,4> convertControllerQuatToPoseQuat(float qx, float qy, float qz, float qw) {
-  auto R = quatToMat(qx, qy, qz, qw);
-  auto R2 = changeBasis_M_R_Mt(R);
-  auto q_out = matToQuat(R2);
-  return q_out; // x,y,z,w
-}
-
-///
-///
-///
-
-
 class XRNode : public rclcpp::Node
 {
 public:
@@ -213,7 +124,8 @@ public:
   {
     publisher_ = this->create_publisher<xr_msgs::msg::Custom>("xr_pose", 10);
     // 修改：将 pose_publisher_ 改为 joint_publisher_
-    joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/control/move_j", 10);
+    joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
+    // joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
     // 尝试加载 URDF 并构建 pinocchio 模型（仅一次）
     namespace fs = std::filesystem;
@@ -228,11 +140,29 @@ public:
         data_ptr_ = std::make_unique<Data>(*model_ptr_);
         model_loaded_ = true;
         RCLCPP_INFO(this->get_logger(), "Loaded URDF: %s  model.nq=%d nv=%d", urdf_filename.c_str(), model_ptr_->nq, model_ptr_->nv);
+
+        // 获取关节的上下限
+        int nq = model_ptr_->nq;  // 配置空间维度
+        // 初始化 Eigen 向量
+        joint_position_lower_limits_ = Eigen::VectorXd(nq);
+        joint_position_upper_limits_ = Eigen::VectorXd(nq);
+        // 从模型中获取限制
+        // 注意：Pinocchio 模型将限制存储在模型中
+        joint_position_lower_limits_ = model_ptr_->lowerPositionLimit;
+        joint_position_upper_limits_ = model_ptr_->upperPositionLimit;
+        // 输出关节上下限
+        RCLCPP_INFO(this->get_logger(), "关节位置限制:");
+        for (int i = 0; i < nq; ++i) {
+          RCLCPP_INFO(this->get_logger(), "  关节[%d]: 下限=%f, 上限=%f", 
+            i, 
+            joint_position_lower_limits_[i], 
+            joint_position_upper_limits_[i]);
+        }
         
-        // // 记录关节名称
-        // for (int i = 0; i < model_ptr_->njoints; ++i) {
-        //   RCLCPP_INFO(this->get_logger(), "Joint %d: %s", i, model_ptr_->names[i].c_str());
-        // }
+        // 记录关节名称
+        for (int i = 0; i < model_ptr_->njoints; ++i) {
+          RCLCPP_INFO(this->get_logger(), "Joint %d: %s", i, model_ptr_->names[i].c_str());
+        }
       } catch (const std::exception & e) {
         RCLCPP_ERROR(this->get_logger(), "Failed to build pinocchio model: %s", e.what());
         model_loaded_ = false;
@@ -250,16 +180,35 @@ public:
     if (ik_thread_.joinable()) ik_thread_.join();
   }
 
-  // 修改：solveIK 接受 Data 引用以复用 data_ptr_
+
+    /**
+   * @brief 使用Pinocchio库求解逆运动学（Inverse Kinematics）
+   * 
+   * @param model 机器人模型，包含关节、连杆、惯性参数等信息
+   * @param data 机器人数据，用于存储计算过程中的中间结果
+   * @param ee_name 末端执行器（end effector）的名称
+   * @param oMdes 期望的末端位姿（相对于世界坐标系）
+   * @param q_init 初始关节位置向量，作为迭代优化的起点
+   * @param eps 收敛精度阈值，当末端误差小于此值时认为求解成功（默认1e-2）
+   * @param IT_MAX 最大迭代次数，防止无限循环（默认1000）
+   * @param DT 迭代步长，控制每次迭代关节位置的更新幅度（默认0.1）
+   * @param damp 阻尼系数，用于求解雅可比矩阵伪逆时的正则化，避免奇异位置（默认1e-6）
+   * 
+   * @return IKResult 逆运动学求解结果，包含：
+   *         - success: 是否成功求解
+   *         - iterations: 实际迭代次数
+   *         - q: 求解得到的关节位置
+   *         - err: 最终的末端位置/姿态误差向量
+   */
   IKResult solveIK(const Model & model,
                   Data & data,
                   const std::string & ee_name,
                   const SE3 & oMdes,
                   const Eigen::VectorXd & q_init,
-                  double eps = 1e-4,
-                  int IT_MAX = 1000,
+                  double eps = 1e-1,
+                  int IT_MAX = 1500,
                   double DT = 1e-1,
-                  double damp = 1e-6)
+                  double damp = 1e-4)
   {
     IKResult res;
     res.success = false;
@@ -278,10 +227,14 @@ public:
 
     // 使用外部传入的 data（避免每次分配）
     Eigen::VectorXd q = q_init;
-    typedef Eigen::Matrix<double,6,1> Vector6d;
-    Vector6d err = Vector6d::Zero();
+    
 
-    Data::Matrix6x J(6, model.nv); J.setZero();
+    Data::Matrix6x J(6, model.nv); 
+    J.setZero();
+
+    typedef Eigen::Matrix<double,6,1> Vector6d;
+    Vector6d err;
+    Eigen::VectorXd v(model.nv);
 
     for (int iter = 0; ; ++iter) {
       forwardKinematics(model, data, q);
@@ -289,12 +242,22 @@ public:
       err = log6(iMd).toVector();
       const double err_norm = err.norm();
 
-      if (err_norm < eps) {
+      bool is_within_limits = true;
+      int nq = model_ptr_->nq;  // 配置空间维度
+
+      for (int i = 0; i < nq; ++i) {
+        if (q[i] < joint_position_lower_limits_[i] || q[i] > joint_position_upper_limits_[i]) {
+          is_within_limits = false;
+          break;
+        }
+      }
+
+      if (err_norm < eps && is_within_limits) {
         res.success = true;
         res.iterations = iter;
         break;
       }
-      if (iter >= IT_MAX) {
+      if (iter >= IT_MAX || !is_within_limits) {
         res.success = false;
         res.iterations = iter;
         break;
@@ -302,13 +265,15 @@ public:
 
       computeJointJacobian(model, data, q, JOINT_ID, J);
 
-      Data::Matrix6 Jlog; Jlog.setZero();
+      Data::Matrix6 Jlog;
+      Jlog.setZero();
       Jlog6(iMd.inverse(), Jlog);
       J = -Jlog * J;
 
       Data::Matrix6 JJt;
       JJt.noalias() = J * J.transpose();
       JJt.diagonal().array() += damp;
+
       Eigen::VectorXd v(model.nv);
       v.noalias() = -J.transpose() * JJt.ldlt().solve(err);
 
@@ -377,7 +342,7 @@ public:
       }
 
       // 降低 IT_MAX 与松一点阈值以加速（可根据需要调整）
-      IKResult ikres = solveIK(*model_ptr_, *data_ptr_, "link6", target, q_init, 2e-4, 300, 0.1, 1e-6);
+      IKResult ikres = solveIK(*model_ptr_, *data_ptr_, "link6", target, q_init);
 
       if (ikres.success) {
         // 存储最新解用于 warm start
@@ -408,9 +373,23 @@ public:
           // joint_msg->effort.push_back(0.0);
         }
         
-        // 发布关节状态
-        joint_publisher_->publish(std::move(joint_msg));
+        // // 发布关节状态
+        // joint_publisher_->publish(std::move(joint_msg));
         
+
+        const auto &t = target.translation();
+        const auto &R = target.rotation();
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(4);
+        ss << "IK Target - Position: ["
+          << t.x() << ", " << t.y() << ", " << t.z() << "], ";
+        // 可以打印旋转矩阵（简单直接）
+        ss << "Rotation matrix: ["
+          << R(0,0) << ", " << R(0,1) << ", " << R(0,2) << "; "
+          << R(1,0) << ", " << R(1,1) << ", " << R(1,2) << "; "
+          << R(2,0) << ", " << R(2,1) << ", " << R(2,2) << "]";
+        RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+
         // 创建详细的关节值字符串
         std::stringstream joint_values_ss;
         joint_values_ss << "Published joint states (" << active_joint_indices.size() << " joints): ";
@@ -429,6 +408,33 @@ public:
       }
     }
   }
+
+
+  tf2::Quaternion convertControllerQuatToPoseQuat(double x, double y, double z, double w){
+    // 原始四元数
+    tf2::Quaternion q_ctrl(x, y, z, w);
+
+    // controller 坐标系 -> ps 坐标系 的旋转矩阵
+    tf2::Matrix3x3 R(
+        0,  0, -1,
+        -1,  0,  0,
+        0,  1,  0
+    );
+
+    // 四元数转矩阵
+    tf2::Matrix3x3 M_ctrl(q_ctrl);
+
+    // 变换：R * M * R^T
+    tf2::Matrix3x3 M_ps = R * M_ctrl * R.transpose();
+
+    // 转回四元数
+    tf2::Quaternion q_ps;
+    M_ps.getRotation(q_ps);
+
+    return q_ps;
+  }
+
+
 
   // 修改回调部分：不直接求解 IK，只更新 latest target 并 notify 工作线程
   void OnPXREAClientCallback(void* context, PXREAClientCallbackType type,int status,void* userData)
@@ -524,56 +530,60 @@ public:
               geometry_msgs::msg::PoseStamped ps;
               ps.header.stamp = this->now();
               ps.header.frame_id = "Pico";
-              // 位置坐标系映射：target_x = -original_z; target_y = original_x; target_z = original_y
-              ps.pose.position.x = -custom_msg.left_controller.pose[2]; // 取反
-              ps.pose.position.y = custom_msg.left_controller.pose[0];
-              ps.pose.position.z = custom_msg.left_controller.pose[1];
-              // 四元数转换（controller -> ps 坐标系）
+
+              ps.pose.position.x = -custom_msg.left_controller.pose[2];
+              ps.pose.position.y = -custom_msg.left_controller.pose[0];
+              ps.pose.position.z =  custom_msg.left_controller.pose[1];
+
+              // 四元数转换
               auto qconv = convertControllerQuatToPoseQuat(
-                custom_msg.left_controller.pose[3],
-                custom_msg.left_controller.pose[4],
-                custom_msg.left_controller.pose[5],
-                custom_msg.left_controller.pose[6]
+                  custom_msg.left_controller.pose[3],
+                  custom_msg.left_controller.pose[4],
+                  custom_msg.left_controller.pose[5],
+                  custom_msg.left_controller.pose[6]
               );
-              ps.pose.orientation.x = static_cast<float>(qconv[0]);
-              ps.pose.orientation.y = static_cast<float>(qconv[1]);
-              ps.pose.orientation.z = static_cast<float>(qconv[2]);
-              ps.pose.orientation.w = static_cast<float>(qconv[3]);
-              
+
+              ps.pose.orientation.x = qconv.x();
+              ps.pose.orientation.y = qconv.y();
+              ps.pose.orientation.z = qconv.z();
+              ps.pose.orientation.w = qconv.w();
+
+              joint_publisher_->publish(ps);
+
               RCLCPP_INFO(this->get_logger(), "Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
                 ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
                 ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
                 ps.pose.orientation.w
               );
 
-              // 求逆解
-              if (model_loaded_ && model_ptr_) {
-                try {
-                  // 构建目标 SE3（注意 Eigen 四元数构造顺序：w,x,y,z）
-                  Eigen::Quaterniond quat_target(
-                    ps.pose.orientation.w,
-                    ps.pose.orientation.x,
-                    ps.pose.orientation.y,
-                    ps.pose.orientation.z
-                  );
-                  quat_target.normalize();
-                  SE3 oMdes(quat_target.toRotationMatrix(),
-                            Eigen::Vector3d(ps.pose.position.x, ps.pose.position.y, ps.pose.position.z));
-                  // 将目标交给异步 IK 线程处理（避免在 90Hz 回调中阻塞）
-                  {
-                    std::lock_guard<std::mutex> lk(ik_mutex_);
-                    latest_oMdes_ = oMdes;
-                    // 使用 neutral 作为初始 guess，工作线程会用 last_solution_ 进行 warm start（若可用）
-                    latest_q_init_ = neutral(*model_ptr_);
-                    new_target_.store(true);
-                  }
-                  ik_cv_.notify_one();
-                } catch (const std::exception & e) {
-                  RCLCPP_ERROR(this->get_logger(), "IK exception: %s", e.what());
-                }
-              } else {
-                RCLCPP_WARN(this->get_logger(), "Pinocchio model not loaded, cannot run IK.");
-              }
+              // // 求逆解
+              // if (model_loaded_ && model_ptr_) {
+              //   try {
+              //     // 构建目标 SE3（注意 Eigen 四元数构造顺序：w,x,y,z）
+              //     Eigen::Quaterniond quat_target(
+              //       ps.pose.orientation.w,
+              //       ps.pose.orientation.x,
+              //       ps.pose.orientation.y,
+              //       ps.pose.orientation.z
+              //     );
+              //     quat_target.normalize();
+              //     SE3 oMdes(quat_target.toRotationMatrix(),
+              //               Eigen::Vector3d(ps.pose.position.x, ps.pose.position.y, ps.pose.position.z));
+              //     // 将目标交给异步 IK 线程处理（避免在 90Hz 回调中阻塞）
+              //     {
+              //       std::lock_guard<std::mutex> lk(ik_mutex_);
+              //       latest_oMdes_ = oMdes;
+              //       // 使用 neutral 作为初始 guess，工作线程会用 last_solution_ 进行 warm start（若可用）
+              //       latest_q_init_ = neutral(*model_ptr_);
+              //       new_target_.store(true);
+              //     }
+              //     ik_cv_.notify_one();
+              //   } catch (const std::exception & e) {
+              //     RCLCPP_ERROR(this->get_logger(), "IK exception: %s", e.what());
+              //   }
+              // } else {
+              //   RCLCPP_WARN(this->get_logger(), "Pinocchio model not loaded, cannot run IK.");
+              // }
             }
 
           } catch (const std::exception& e) {
@@ -593,7 +603,7 @@ public:
 private:
   rclcpp::Publisher<xr_msgs::msg::Custom>::SharedPtr publisher_;
   // 修改：将 pose_publisher_ 改为 joint_publisher_
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr joint_publisher_;
 
   // pinocchio 模型（可选）
   std::unique_ptr<Model> model_ptr_;
@@ -622,6 +632,10 @@ private:
     }
     return oss.str();
   }
+
+
+  Eigen::VectorXd joint_position_lower_limits_;
+  Eigen::VectorXd joint_position_upper_limits_;
 };
 
 
