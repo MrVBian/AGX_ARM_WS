@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Pinocchio逆运动学求解器封装
-将逆运动学求解器封装为一个简单的Python函数
+Pinocchio逆运动学求解器ROS2节点封装
+监听目标位姿话题，求解逆运动学，然后发布关节状态
 """
 
 import numpy as np
 import pinocchio
 from numpy.linalg import norm, solve
 import warnings
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import JointState
 
 
 class InverseKinematicsSolver:
@@ -34,6 +38,19 @@ class InverseKinematicsSolver:
         
         # 初始化数据
         self.data = self.model.createData()
+        
+        # 获取关节名称（排除固定关节）
+        self.joint_names = self._get_joint_names()
+    
+    def _get_joint_names(self):
+        """获取可动关节的名称列表"""
+        joint_names = []
+        for name in self.model.names[1:]:  # 跳过基座关节"universe"
+            joint_id = self.model.getJointId(name)
+            joint = self.model.joints[joint_id]
+            if joint.nq > 0:  # 只考虑有自由度的关节，nq是属性不是方法
+                joint_names.append(name)
+        return joint_names
     
     def solve_ik(self, target_pose, initial_q=None, eps=1e-4, max_iter=1000, dt=1e-1, verbose=False):
         """
@@ -104,6 +121,155 @@ class InverseKinematicsSolver:
         return q, False, error_norm, max_iter
 
 
+class InverseKinematicsNode(Node):
+    """逆运动学ROS2节点"""
+    
+    def __init__(self, node_name='inverse_kinematics_node'):
+        super().__init__(node_name)
+        
+        # 声明参数
+        self.declare_parameter('urdf_path', '/projects/xr/agx_arm_ws/src/piper/urdf/piper_description.urdf')
+        self.declare_parameter('target_joint_id', 6)
+        self.declare_parameter('damping', 1e-12)
+        self.declare_parameter('eps', 1e-4)
+        self.declare_parameter('max_iter', 1000)
+        self.declare_parameter('dt', 1e-1)
+        
+        # 获取参数
+        urdf_path = self.get_parameter('urdf_path').get_parameter_value().string_value
+        joint_id = self.get_parameter('target_joint_id').get_parameter_value().integer_value
+        damping = self.get_parameter('damping').get_parameter_value().double_value
+        
+        if not urdf_path:
+            self.get_logger().error('URDF path not provided. Please set the urdf_path parameter.')
+            raise ValueError('URDF path not provided.')
+        
+        # 初始化逆运动学求解器
+        self.ik_solver = InverseKinematicsSolver(
+            urdf_path=urdf_path,
+            joint_id=joint_id,
+            damping=damping
+        )
+        
+        # 获取关节名称
+        self.joint_names = self.ik_solver.joint_names
+        
+        # 初始化当前关节角度
+        self.current_q = pinocchio.neutral(self.ik_solver.model)
+        
+        # 创建订阅者
+        self.pose_subscription = self.create_subscription(
+            PoseStamped,
+            '/control/move_p',
+            self.pose_callback,
+            10
+        )
+        
+        # 创建发布者
+        self.joint_state_publisher = self.create_publisher(
+            JointState,
+            '/joint_states',
+            10
+        )
+        
+        self.get_logger().info(f'逆运动学节点已启动，监听 /control/move_p 话题')
+        self.get_logger().info(f'关节数量: {len(self.joint_names)}')
+        self.get_logger().info(f'关节名称: {self.joint_names}')
+    
+    def pose_callback(self, msg):
+        """处理接收到的目标位姿消息"""
+        self.get_logger().info('接收到新的目标位姿，开始逆运动学求解...')
+        
+        # 提取目标位置
+        target_position = np.array([
+            msg.pose.position.x,
+            msg.pose.position.y,
+            msg.pose.position.z
+        ])
+        
+        # 提取目标姿态（四元数）
+        quaternion = np.array([
+            msg.pose.orientation.w,
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z
+        ])
+        
+        # 将四元数转换为旋转矩阵
+        from scipy.spatial.transform import Rotation
+        rotation = Rotation.from_quat([quaternion[1], quaternion[2], 
+                                      quaternion[3], quaternion[0]]).as_matrix()
+        
+        # 创建目标位姿
+        target_pose = pinocchio.SE3(rotation, target_position)
+        
+        # 获取求解参数
+        eps = self.get_parameter('eps').get_parameter_value().double_value
+        max_iter = self.get_parameter('max_iter').get_parameter_value().integer_value
+        dt = self.get_parameter('dt').get_parameter_value().double_value
+        
+        # 求解逆运动学
+        q, success, error_norm, iterations = self.ik_solver.solve_ik(
+            target_pose=target_pose,
+            initial_q=self.current_q,
+            eps=eps,
+            max_iter=max_iter,
+            dt=dt,
+            verbose=False
+        )
+        
+        if success:
+            self.get_logger().info(f'逆运动学求解成功! 迭代次数: {iterations}, 最终误差: {error_norm:.6e}')
+            
+            # 更新当前关节角度
+            self.current_q = q.copy()
+            
+            # 发布关节状态
+            self.publish_joint_state(q)
+        else:
+            self.get_logger().warn(f'逆运动学求解失败! 迭代次数: {iterations}, 最终误差: {error_norm:.6e}')
+    
+    def publish_joint_state(self, joint_positions):
+        """发布关节状态消息"""
+        joint_state_msg = JointState()
+        joint_state_msg.header.stamp = self.get_clock().now().to_msg()
+        joint_state_msg.header.frame_id = 'base_link'
+        
+        # 设置关节名称
+        joint_state_msg.name = self.joint_names
+        
+        # 获取可动关节的索引
+        movable_joint_indices = []
+        positions = []
+        
+        # 遍历所有关节，只提取可动关节的角度
+        q_idx = 0
+        for i, joint in enumerate(self.ik_solver.model.joints):
+            if i == 0:  # 跳过第一个关节（universe）
+                continue
+                
+            if joint.nq > 0:  # 可动关节
+                movable_joint_indices.append(i)
+                # 提取当前关节对应的角度
+                for j in range(joint.nq):
+                    positions.append(joint_positions[q_idx + j])
+                q_idx += joint.nq
+        
+        joint_state_msg.position = positions
+        
+        # 设置速度和力为零
+        joint_state_msg.velocity = [0.0] * len(positions)
+        joint_state_msg.effort = [0.0] * len(positions)
+        
+        # 发布消息
+        self.joint_state_publisher.publish(joint_state_msg)
+        self.get_logger().info(f'关节状态已发布，关节数量: {len(positions)}')
+        
+        # 打印关节角度
+        joint_angles_str = ', '.join([f'{angle:.4f}' for angle in positions])
+        self.get_logger().info(f'关节角度: [{joint_angles_str}]')
+
+
 def solve_inverse_kinematics(target_position, target_rotation=None, 
                             urdf_path=None, joint_id=6, initial_q=None,
                             eps=1e-4, max_iter=1000, dt=1e-1, 
@@ -165,27 +331,22 @@ def solve_inverse_kinematics(target_position, target_rotation=None,
                              verbose=verbose)
 
 
-# 示例使用函数
-def example_usage():
-    """示例函数，展示如何使用逆运动学求解器"""
+def main(args=None):
+    """主函数，启动ROS2节点"""
+    rclpy.init(args=args)
     
-    # 目标位置
-    target_position = [1.0, 0.0, 1.0]
-    
-    # 方法1: 不指定旋转（使用默认单位旋转矩阵）
-    target_quaternion = [1.0, 0.0, 0.0, 0.0]  # 单位四元数，无旋转
-    
-    joint_angles, success, error, iterations = solve_inverse_kinematics(
-        target_position=target_position,
-        target_rotation=target_quaternion,
-        urdf_path="/projects/xr/agx_arm_ws/src/piper/urdf/piper_description.urdf",
-        joint_id=6,
-        verbose=True
-    )
-    
-    if success:
-        print(f"\nSuccess! Joint angles: {joint_angles.flatten().tolist()}")
-    else:
-        print(f"\nFailed to converge. Final error: {error}")
-    
-    return joint_angles, success
+    try:
+        ik_node = InverseKinematicsNode()
+        rclpy.spin(ik_node)
+    except ValueError as e:
+        ik_node.get_logger().error(str(e))
+    except KeyboardInterrupt:
+        ik_node.get_logger().info('节点被用户中断')
+    finally:
+        if 'ik_node' in locals():
+            ik_node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

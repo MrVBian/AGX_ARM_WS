@@ -24,7 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'ik_example = ik_solver_py.main:example_usage',
+            'ik_example = ik_solver_py.main:main',
         ],
     },
 )
