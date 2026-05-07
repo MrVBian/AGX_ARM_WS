@@ -123,9 +123,10 @@ public:
   XRNode() : Node("xr_publisher")
   {
     publisher_ = this->create_publisher<xr_msgs::msg::Custom>("xr_pose", 10);
-    // 修改：将 pose_publisher_ 改为 joint_publisher_
-    joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
-    // joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
+    // 修改：将 pose_publisher_ 改为 l_joint_publisher_
+    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
+    r_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/right/control/move_p", 10);
+    // l_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
     // 尝试加载 URDF 并构建 pinocchio 模型（仅一次）
     namespace fs = std::filesystem;
@@ -374,7 +375,7 @@ public:
         }
         
         // // 发布关节状态
-        // joint_publisher_->publish(std::move(joint_msg));
+        // l_joint_publisher_->publish(std::move(joint_msg));
         
 
         const auto &t = target.translation();
@@ -548,13 +549,23 @@ public:
               ps.pose.orientation.z = qconv.z();
               ps.pose.orientation.w = qconv.w();
 
-              joint_publisher_->publish(ps);
+              if (ps.pose.position.z > 0.1f){
+                RCLCPP_INFO(this->get_logger(), "S Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
+                  ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
+                  ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
+                  ps.pose.orientation.w
+                );
+
+                l_joint_publisher_->publish(ps);
+              }
 
               RCLCPP_INFO(this->get_logger(), "Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
                 ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
                 ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
                 ps.pose.orientation.w
               );
+
+
 
               // // 求逆解
               // if (model_loaded_ && model_ptr_) {
@@ -586,6 +597,38 @@ public:
               // }
             }
 
+            if (custom_msg.right_controller.trigger == 1.0f) {
+              geometry_msgs::msg::PoseStamped ps;
+              ps.header.stamp = this->now();
+              ps.header.frame_id = "Pico";
+
+              ps.pose.position.x = -custom_msg.right_controller.pose[2];
+              ps.pose.position.y = -custom_msg.right_controller.pose[0];
+              ps.pose.position.z =  custom_msg.right_controller.pose[1];
+
+              // 四元数转换
+              auto qconv = convertControllerQuatToPoseQuat(
+                  custom_msg.right_controller.pose[3],
+                  custom_msg.right_controller.pose[4],
+                  custom_msg.right_controller.pose[5],
+                  custom_msg.right_controller.pose[6]
+              );
+
+              ps.pose.orientation.x = qconv.x();
+              ps.pose.orientation.y = qconv.y();
+              ps.pose.orientation.z = qconv.z();
+              ps.pose.orientation.w = qconv.w();
+
+              if (ps.pose.position.z > 0.1f)
+                r_joint_publisher_->publish(ps);
+
+              RCLCPP_INFO(this->get_logger(), "Right controller pose: [%f, %f, %f, %f, %f, %f, %f]",
+                ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
+                ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
+                ps.pose.orientation.w
+              );
+            }
+
           } catch (const std::exception& e) {
             std::cerr << "Parse failed: " << e.what() << std::endl;
           }
@@ -602,8 +645,9 @@ public:
 
 private:
   rclcpp::Publisher<xr_msgs::msg::Custom>::SharedPtr publisher_;
-  // 修改：将 pose_publisher_ 改为 joint_publisher_
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr joint_publisher_;
+  // 修改：将 pose_publisher_ 改为 l_joint_publisher_
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr l_joint_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr r_joint_publisher_;
 
   // pinocchio 模型（可选）
   std::unique_ptr<Model> model_ptr_;
