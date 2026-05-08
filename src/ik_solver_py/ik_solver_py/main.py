@@ -160,7 +160,7 @@ class InverseKinematicsNode(Node):
         # 创建订阅者
         self.pose_subscription = self.create_subscription(
             PoseStamped,
-            '/control/move_p',
+            '/xr/move_p',
             self.pose_callback,
             10
         )
@@ -171,8 +171,13 @@ class InverseKinematicsNode(Node):
             '/joint_states',
             10
         )
+        # self.joint_state_publisher = self.create_publisher(
+        #     JointState,
+        #     '/control/move_j',
+        #     10
+        # )
         
-        self.get_logger().info(f'逆运动学节点已启动，监听 /control/move_p 话题')
+        self.get_logger().info(f'逆运动学节点已启动，监听 /xr/move_p 话题')
         self.get_logger().info(f'关节数量: {len(self.joint_names)}')
         self.get_logger().info(f'关节名称: {self.joint_names}')
     

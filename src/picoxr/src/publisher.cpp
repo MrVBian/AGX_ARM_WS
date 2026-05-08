@@ -123,9 +123,10 @@ public:
   XRNode() : Node("xr_publisher")
   {
     publisher_ = this->create_publisher<xr_msgs::msg::Custom>("xr_pose", 10);
-    // 修改：将 pose_publisher_ 改为 l_joint_publisher_
-    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
+    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/xr/move_p", 10);
+    // l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
     r_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/right/control/move_p", 10);
+    g_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/control/joint_states", 10);
     // l_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
     // 尝试加载 URDF 并构建 pinocchio 模型（仅一次）
@@ -353,26 +354,26 @@ public:
         }
         // RCLCPP_INFO(this->get_logger(), "Async IK converged iters=%d", ikres.iterations);
         
-        // 发布关节状态消息
-        auto joint_msg = std::make_unique<sensor_msgs::msg::JointState>();
-        joint_msg->header.stamp = this->now();
-        joint_msg->header.frame_id = "base_link";
+        // // 发布关节状态消息
+        // auto joint_msg = std::make_unique<sensor_msgs::msg::JointState>();
+        // joint_msg->header.stamp = this->now();
+        // joint_msg->header.frame_id = "base_link";
         
-        // 从 q 向量中提取活动关节的值
-        for (size_t i = 0; i < active_joint_indices.size(); ++i) {
-          int joint_idx = active_joint_indices[i];
-          int q_idx = model_ptr_->idx_qs[joint_idx];
+        // // 从 q 向量中提取活动关节的值
+        // for (size_t i = 0; i < active_joint_indices.size(); ++i) {
+        //   int joint_idx = active_joint_indices[i];
+        //   int q_idx = model_ptr_->idx_qs[joint_idx];
           
-          // 获取关节名称
-          joint_msg->name.push_back(active_joint_names[i]);
+        //   // 获取关节名称
+        //   joint_msg->name.push_back(active_joint_names[i]);
           
-          // 获取关节位置
-          joint_msg->position.push_back(ikres.q[q_idx]);
+        //   // 获取关节位置
+        //   joint_msg->position.push_back(ikres.q[q_idx]);
           
-          // // 速度和力
-          // joint_msg->velocity.push_back(0.0);
-          // joint_msg->effort.push_back(0.0);
-        }
+        //   // // 速度和力
+        //   // joint_msg->velocity.push_back(0.0);
+        //   // joint_msg->effort.push_back(0.0);
+        // }
         
         // // 发布关节状态
         // l_joint_publisher_->publish(std::move(joint_msg));
@@ -520,10 +521,6 @@ public:
               custom_msg.right_controller = right_controller_msg;
             }
 
-            // hand
-
-            // body
-
             // // XR
             publisher_->publish(custom_msg);
 
@@ -544,10 +541,24 @@ public:
                   custom_msg.left_controller.pose[6]
               );
 
-              ps.pose.orientation.x = qconv.x();
-              ps.pose.orientation.y = qconv.y();
-              ps.pose.orientation.z = qconv.z();
-              ps.pose.orientation.w = qconv.w();
+              // 在转换结果基础上，绕X轴旋转180°
+              // 绕X轴旋转180°的四元数：(sin(π/2)=1, 0, 0, cos(π/2)=0) = (1, 0, 0, 0)
+              tf2::Quaternion rot_x_180(1.0, 0.0, 0.0, 0.0);
+
+              // 组合旋转：先应用qconv，再绕X轴旋转180°
+              // 注意：四元数乘法顺序通常是 q_final = q_add * q_original
+              tf2::Quaternion q_final = rot_x_180 * qconv;
+              q_final.normalize();
+
+              ps.pose.orientation.x = q_final.x();
+              ps.pose.orientation.y = q_final.y();
+              ps.pose.orientation.z = q_final.z();
+              ps.pose.orientation.w = q_final.w();
+
+              // ps.pose.orientation.x = qconv.x();
+              // ps.pose.orientation.y = qconv.y();
+              // ps.pose.orientation.z = qconv.z();
+              // ps.pose.orientation.w = qconv.w();
 
               if (ps.pose.position.z > 0.1f){
                 RCLCPP_INFO(this->get_logger(), "S Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
@@ -629,6 +640,37 @@ public:
               );
             }
 
+            if (custom_msg.left_controller.gripper == 1.0f && left_gripper == false) {
+              auto message = sensor_msgs::msg::JointState();
+              message.header.stamp = this->now();
+              message.header.frame_id = "base_link";
+              
+              float gripper_value = 0.05f;
+              message.name = {"gripper"};
+              message.position = {gripper_value};
+              message.velocity = {0.0};  // 使用空数组会导致错误，这里设为0.0
+              message.effort = {1.0};
+              g_joint_publisher_->publish(message);
+              left_gripper = true;
+
+              RCLCPP_INFO(this->get_logger(), "Left gripper: [%f]", gripper_value);
+            }
+            else if (custom_msg.left_controller.gripper != 1.0f && left_gripper == true){
+              auto message = sensor_msgs::msg::JointState();
+              message.header.stamp = this->now();
+              message.header.frame_id = "base_link";
+              
+              float gripper_value = 0.0f;
+              message.name = {"gripper"};
+              message.position = {gripper_value};
+              message.velocity = {0.0};  // 使用空数组会导致错误，这里设为0.0
+              message.effort = {1.0};
+              g_joint_publisher_->publish(message);
+              left_gripper = false;
+
+              RCLCPP_INFO(this->get_logger(), "Left gripper: [%f]", gripper_value);
+            }
+
           } catch (const std::exception& e) {
             std::cerr << "Parse failed: " << e.what() << std::endl;
           }
@@ -648,6 +690,12 @@ private:
   // 修改：将 pose_publisher_ 改为 l_joint_publisher_
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr l_joint_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr r_joint_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr g_joint_publisher_;
+  bool left_gripper = false;
+
+  bool left_init = false;
+  geometry_msgs::msg::PoseStamped left_init_pose;
+
 
   // pinocchio 模型（可选）
   std::unique_ptr<Model> model_ptr_;
