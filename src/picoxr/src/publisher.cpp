@@ -453,7 +453,8 @@ public:
       l_real_has_new_pose_ = true;
 
       // 打印接收到的信息
-      RCLCPP_INFO(this->get_logger(), "\033[1;33mTCP位姿\n- 位置: [x: %.3f, y: %.3f, z: %.3f]\n姿态: [qx: %.3f, qy: %.3f, qz: %.3f, qw: %.3f]\033[0m", 
+      RCLCPP_INFO(this->get_logger(), "\033[1;33mTCP位姿 topic: %s\n- 位置: [x: %.3f, y: %.3f, z: %.3f]\n姿态: [qx: %.3f, qy: %.3f, qz: %.3f, qw: %.3f]\033[0m", 
+                  l_real_pose_subscriber_->get_topic_name(),
                   l_real_latest_pose_.pose.position.x, l_real_latest_pose_.pose.position.y, l_real_latest_pose_.pose.position.z,
                   l_real_latest_pose_.pose.orientation.x, l_real_latest_pose_.pose.orientation.y, 
                   l_real_latest_pose_.pose.orientation.z, l_real_latest_pose_.pose.orientation.w
@@ -582,15 +583,15 @@ public:
                 l_ctl_init_pose.pose.orientation.y = qconv.y();
                 l_ctl_init_pose.pose.orientation.z = qconv.z();
                 l_ctl_init_pose.pose.orientation.w = qconv.w();
-                l_real_pose.header.stamp = ps.header.stamp;
-                l_real_pose.header.frame_id = "Real";
-                l_real_pose.pose.position.x = 0.2;
-                l_real_pose.pose.position.y = 0.0;
-                l_real_pose.pose.position.z = 0.3;
-                l_real_pose.pose.orientation.x = 0.0;
-                l_real_pose.pose.orientation.y = 0.6755837736314217;
-                l_real_pose.pose.orientation.z = 0.0;
-                l_real_pose.pose.orientation.w = 0.7372832324188093;
+                // l_real_pose.header.stamp = ps.header.stamp;
+                // l_real_pose.header.frame_id = "Real";
+                // l_real_pose.pose.position.x = 0.2;
+                // l_real_pose.pose.position.y = 0.0;
+                // l_real_pose.pose.position.z = 0.3;
+                // l_real_pose.pose.orientation.x = 0.0;
+                // l_real_pose.pose.orientation.y = 0.6755837736314217;
+                // l_real_pose.pose.orientation.z = 0.0;
+                // l_real_pose.pose.orientation.w = 0.7372832324188093;
                 l_ctl_init = true;
 
                 RCLCPP_INFO(this->get_logger(), 
@@ -614,7 +615,7 @@ public:
 
                 // 表格形式输出计算过程
                 RCLCPP_INFO(this->get_logger(), 
-                  "\033[1;36m\n"
+                  "\033[1;36m topic: %s\n"
                   "┌─────────────────────────────────────────────────────────┐\n"
                   "│              POSITION CALCULATION TABLE                  │\n"
                   "├─────────────────┬──────────┬──────────┬──────────┬───────┤\n"
@@ -626,6 +627,7 @@ public:
                   "│ Real Base       │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
                   "│ Final Result    │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
                   "└─────────────────┴──────────┴──────────┴──────────┴───────┘\033[0m",
+                  l_joint_publisher_->get_topic_name(),
                   ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
                   l_ctl_init_pose.pose.position.x, l_ctl_init_pose.pose.position.y, l_ctl_init_pose.pose.position.z,
                   x_diff, y_diff, z_diff,
@@ -672,12 +674,6 @@ public:
                 
                 // 发布结果
                 l_joint_publisher_->publish(ps_diff);
-
-                // RCLCPP_INFO(this->get_logger(), "Left controller pose diff: [%f, %f, %f, %f, %f, %f, %f]",
-                //   ps_diff.pose.position.x, ps_diff.pose.position.y, ps_diff.pose.position.z,
-                //   ps_diff.pose.orientation.x, ps_diff.pose.orientation.y, ps_diff.pose.orientation.z,
-                //   ps_diff.pose.orientation.w
-                // );
               }
 
               // // 求逆解
