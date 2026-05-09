@@ -129,6 +129,9 @@ public:
     g_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/control/joint_states", 10);
     // l_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
+    l_real_pose_subscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/feedback/tcp_pose", 10, std::bind(&XRNode::lPoseCallback, this, std::placeholders::_1));
+    void lPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+
     // 尝试加载 URDF 并构建 pinocchio 模型（仅一次）
     namespace fs = std::filesystem;
     const std::string urdf_filename = "/projects/xr/agx_arm_ws/src/piper/urdf/piper_description.urdf";
@@ -437,6 +440,27 @@ public:
   }
 
 
+  void lPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+  {
+    if (l_real_has_new_pose_ == false){
+      l_real_latest_pose_.pose.position.x = msg->pose.position.x;
+      l_real_latest_pose_.pose.position.y = msg->pose.position.y;
+      l_real_latest_pose_.pose.position.z = msg->pose.position.z;
+      l_real_latest_pose_.pose.orientation.x = msg->pose.orientation.x;
+      l_real_latest_pose_.pose.orientation.y = msg->pose.orientation.y;
+      l_real_latest_pose_.pose.orientation.z = msg->pose.orientation.z;
+      l_real_latest_pose_.pose.orientation.w = msg->pose.orientation.w;
+      l_real_has_new_pose_ = true;
+
+      // 打印接收到的信息
+      RCLCPP_INFO(this->get_logger(), "\033[1;33mTCP位姿\n- 位置: [x: %.3f, y: %.3f, z: %.3f]\n姿态: [qx: %.3f, qy: %.3f, qz: %.3f, qw: %.3f]\033[0m", 
+                  l_real_latest_pose_.pose.position.x, l_real_latest_pose_.pose.position.y, l_real_latest_pose_.pose.position.z,
+                  l_real_latest_pose_.pose.orientation.x, l_real_latest_pose_.pose.orientation.y, 
+                  l_real_latest_pose_.pose.orientation.z, l_real_latest_pose_.pose.orientation.w
+      );
+    }
+  }
+
 
   // 修改回调部分：不直接求解 IK，只更新 latest target 并 notify 工作线程
   void OnPXREAClientCallback(void* context, PXREAClientCallbackType type,int status,void* userData)
@@ -547,6 +571,8 @@ public:
               ps.pose.orientation.w = qconv.w();
 
               if (l_ctl_init == false) {
+                // 更新真机姿态
+                l_real_has_new_pose_ = false;
                 l_ctl_init_pose.header.stamp = ps.header.stamp;
                 l_ctl_init_pose.header.frame_id = ps.header.frame_id;
                 l_ctl_init_pose.pose.position.x = ps.pose.position.x;
@@ -574,13 +600,38 @@ public:
                   ps.pose.orientation.w
                 );
               }
-              else {
+              else if(l_ctl_init == true && l_real_has_new_pose_ == true) {
                 geometry_msgs::msg::PoseStamped ps_diff;
 
                 // 计算位置差值
-                ps_diff.pose.position.x = ps.pose.position.x - l_ctl_init_pose.pose.position.x + l_real_pose.pose.position.x;
-                ps_diff.pose.position.y = ps.pose.position.y - l_ctl_init_pose.pose.position.y + l_real_pose.pose.position.y;
-                ps_diff.pose.position.z = ps.pose.position.z - l_ctl_init_pose.pose.position.z + l_real_pose.pose.position.z;
+                float x_diff = ps.pose.position.x - l_ctl_init_pose.pose.position.x;
+                float y_diff = ps.pose.position.y - l_ctl_init_pose.pose.position.y;
+                float z_diff = ps.pose.position.z - l_ctl_init_pose.pose.position.z;
+                
+                ps_diff.pose.position.x = x_diff + l_real_pose.pose.position.x;
+                ps_diff.pose.position.y = y_diff + l_real_pose.pose.position.y;
+                ps_diff.pose.position.z = z_diff + l_real_pose.pose.position.z;
+
+                // 表格形式输出计算过程
+                RCLCPP_INFO(this->get_logger(), 
+                  "\033[1;36m\n"
+                  "┌─────────────────────────────────────────────────────────┐\n"
+                  "│              POSITION CALCULATION TABLE                  │\n"
+                  "├─────────────────┬──────────┬──────────┬──────────┬───────┤\n"
+                  "│   Component     │     X    │     Y    │     Z    │ Units │\n"
+                  "├─────────────────┼──────────┼──────────┼──────────┼───────┤\n"
+                  "│ Current Ctrl    │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
+                  "│ Init Ctrl       │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
+                  "│ Difference      │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
+                  "│ Real Base       │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
+                  "│ Final Result    │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
+                  "└─────────────────┴──────────┴──────────┴──────────┴───────┘\033[0m",
+                  ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
+                  l_ctl_init_pose.pose.position.x, l_ctl_init_pose.pose.position.y, l_ctl_init_pose.pose.position.z,
+                  x_diff, y_diff, z_diff,
+                  l_real_pose.pose.position.x, l_real_pose.pose.position.y, l_real_pose.pose.position.z,
+                  ps_diff.pose.position.x, ps_diff.pose.position.y, ps_diff.pose.position.z
+                );
 
                 // 获取初始控制器姿态的四元数
                 Eigen::Quaterniond q_init(
@@ -622,11 +673,11 @@ public:
                 // 发布结果
                 l_joint_publisher_->publish(ps_diff);
 
-                RCLCPP_INFO(this->get_logger(), "Left controller pose diff: [%f, %f, %f, %f, %f, %f, %f]",
-                  ps_diff.pose.position.x, ps_diff.pose.position.y, ps_diff.pose.position.z,
-                  ps_diff.pose.orientation.x, ps_diff.pose.orientation.y, ps_diff.pose.orientation.z,
-                  ps_diff.pose.orientation.w
-                );
+                // RCLCPP_INFO(this->get_logger(), "Left controller pose diff: [%f, %f, %f, %f, %f, %f, %f]",
+                //   ps_diff.pose.position.x, ps_diff.pose.position.y, ps_diff.pose.position.z,
+                //   ps_diff.pose.orientation.x, ps_diff.pose.orientation.y, ps_diff.pose.orientation.z,
+                //   ps_diff.pose.orientation.w
+                // );
               }
 
               // // 求逆解
@@ -745,6 +796,13 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr l_joint_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr r_joint_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr g_joint_publisher_;
+
+  // 最新左臂真机姿态和相关变量
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr l_real_pose_subscriber_;
+  geometry_msgs::msg::PoseStamped l_real_latest_pose_;
+  bool l_real_has_new_pose_ = false;
+
+
   bool left_gripper = false;
 
   bool l_ctl_init = false;
