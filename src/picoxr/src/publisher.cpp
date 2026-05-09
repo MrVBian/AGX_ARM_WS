@@ -541,42 +541,93 @@ public:
                   custom_msg.left_controller.pose[6]
               );
 
-              // 在转换结果基础上，绕X轴旋转180°
-              // 绕X轴旋转180°的四元数：(sin(π/2)=1, 0, 0, cos(π/2)=0) = (1, 0, 0, 0)
-              tf2::Quaternion rot_x_180(1.0, 0.0, 0.0, 0.0);
+              ps.pose.orientation.x = qconv.x();
+              ps.pose.orientation.y = qconv.y();
+              ps.pose.orientation.z = qconv.z();
+              ps.pose.orientation.w = qconv.w();
 
-              // 组合旋转：先应用qconv，再绕X轴旋转180°
-              // 注意：四元数乘法顺序通常是 q_final = q_add * q_original
-              tf2::Quaternion q_final = rot_x_180 * qconv;
-              q_final.normalize();
+              if (l_ctl_init == false) {
+                l_ctl_init_pose.header.stamp = ps.header.stamp;
+                l_ctl_init_pose.header.frame_id = ps.header.frame_id;
+                l_ctl_init_pose.pose.position.x = ps.pose.position.x;
+                l_ctl_init_pose.pose.position.y = ps.pose.position.y;
+                l_ctl_init_pose.pose.position.z = ps.pose.position.z;
+                l_ctl_init_pose.pose.orientation.x = qconv.x();
+                l_ctl_init_pose.pose.orientation.y = qconv.y();
+                l_ctl_init_pose.pose.orientation.z = qconv.z();
+                l_ctl_init_pose.pose.orientation.w = qconv.w();
+                l_real_pose.header.stamp = ps.header.stamp;
+                l_real_pose.header.frame_id = "Real";
+                l_real_pose.pose.position.x = 0.2;
+                l_real_pose.pose.position.y = 0.0;
+                l_real_pose.pose.position.z = 0.3;
+                l_real_pose.pose.orientation.x = 0.0;
+                l_real_pose.pose.orientation.y = 0.6755837736314217;
+                l_real_pose.pose.orientation.z = 0.0;
+                l_real_pose.pose.orientation.w = 0.7372832324188093;
+                l_ctl_init = true;
 
-              ps.pose.orientation.x = q_final.x();
-              ps.pose.orientation.y = q_final.y();
-              ps.pose.orientation.z = q_final.z();
-              ps.pose.orientation.w = q_final.w();
-
-              // ps.pose.orientation.x = qconv.x();
-              // ps.pose.orientation.y = qconv.y();
-              // ps.pose.orientation.z = qconv.z();
-              // ps.pose.orientation.w = qconv.w();
-
-              if (ps.pose.position.z > 0.1f){
-                RCLCPP_INFO(this->get_logger(), "S Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
+                RCLCPP_INFO(this->get_logger(), 
+                  "\033[1;33m[LEFT CTRL INIT] Pose: [x:%f, y:%f, z:%f, qx:%f, qy:%f, qz:%f, qw:%f]\033[0m",
                   ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
                   ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
                   ps.pose.orientation.w
                 );
-
-                l_joint_publisher_->publish(ps);
               }
+              else {
+                geometry_msgs::msg::PoseStamped ps_diff;
 
-              RCLCPP_INFO(this->get_logger(), "Left controller pose: [%f, %f, %f, %f, %f, %f, %f]",
-                ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
-                ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
-                ps.pose.orientation.w
-              );
+                // 计算位置差值
+                ps_diff.pose.position.x = ps.pose.position.x - l_ctl_init_pose.pose.position.x + l_real_pose.pose.position.x;
+                ps_diff.pose.position.y = ps.pose.position.y - l_ctl_init_pose.pose.position.y + l_real_pose.pose.position.y;
+                ps_diff.pose.position.z = ps.pose.position.z - l_ctl_init_pose.pose.position.z + l_real_pose.pose.position.z;
 
+                // 获取初始控制器姿态的四元数
+                Eigen::Quaterniond q_init(
+                    l_ctl_init_pose.pose.orientation.w,
+                    l_ctl_init_pose.pose.orientation.x,
+                    l_ctl_init_pose.pose.orientation.y,
+                    l_ctl_init_pose.pose.orientation.z
+                );
+                
+                // 获取当前控制器姿态的四元数
+                Eigen::Quaterniond q_current(qconv);
+                
+                // 计算四元数差值：q_diff = q_init^-1 * q_current
+                Eigen::Quaterniond q_diff = q_init.inverse() * q_current;
+                q_diff.normalize();
+                
+                // 获取真实初始姿态的四元数
+                Eigen::Quaterniond q_real_init(
+                    l_real_pose.pose.orientation.w,
+                    l_real_pose.pose.orientation.x,
+                    l_real_pose.pose.orientation.y,
+                    l_real_pose.pose.orientation.z
+                );
+                
+                // 将差值应用到真实初始姿态上：q_result = q_real_init * q_diff
+                Eigen::Quaterniond q_result = q_real_init * q_diff;
+                q_result.normalize();
+                
+                // 设置结果姿态
+                ps_diff.pose.orientation.x = q_result.x();
+                ps_diff.pose.orientation.y = q_result.y();
+                ps_diff.pose.orientation.z = q_result.z();
+                ps_diff.pose.orientation.w = q_result.w();
+                
+                // 设置时间戳和坐标系
+                ps_diff.header.stamp = this->now();
+                ps_diff.header.frame_id = "Real";  // 或者你想要的坐标系
+                
+                // 发布结果
+                l_joint_publisher_->publish(ps_diff);
 
+                RCLCPP_INFO(this->get_logger(), "Left controller pose diff: [%f, %f, %f, %f, %f, %f, %f]",
+                  ps_diff.pose.position.x, ps_diff.pose.position.y, ps_diff.pose.position.z,
+                  ps_diff.pose.orientation.x, ps_diff.pose.orientation.y, ps_diff.pose.orientation.z,
+                  ps_diff.pose.orientation.w
+                );
+              }
 
               // // 求逆解
               // if (model_loaded_ && model_ptr_) {
@@ -606,6 +657,9 @@ public:
               // } else {
               //   RCLCPP_WARN(this->get_logger(), "Pinocchio model not loaded, cannot run IK.");
               // }
+            }
+            else {
+              l_ctl_init = false;
             }
 
             if (custom_msg.right_controller.trigger == 1.0f) {
@@ -693,8 +747,9 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr g_joint_publisher_;
   bool left_gripper = false;
 
-  bool left_init = false;
-  geometry_msgs::msg::PoseStamped left_init_pose;
+  bool l_ctl_init = false;
+  geometry_msgs::msg::PoseStamped l_ctl_init_pose;
+  geometry_msgs::msg::PoseStamped l_real_pose;
 
 
   // pinocchio 模型（可选）
