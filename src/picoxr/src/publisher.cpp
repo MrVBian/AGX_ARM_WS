@@ -23,6 +23,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"  // 添加 JointState 头文件
+#include "std_srvs/srv/empty.hpp"
 
 #include <filesystem>
 
@@ -123,14 +124,17 @@ public:
   XRNode() : Node("xr_publisher")
   {
     publisher_ = this->create_publisher<xr_msgs::msg::Custom>("xr_pose", 10);
-    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/xr/move_p", 10);
-    // l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
+    // l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/xr/move_p", 10);
+    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
     r_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/right/control/move_p", 10);
     g_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/control/joint_states", 10);
     // l_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
     l_real_pose_subscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>("/feedback/tcp_pose", 10, std::bind(&XRNode::lPoseCallback, this, std::placeholders::_1));
     void lPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+
+    // 创建紧急停止服务客户端
+    emergency_stop_client_ = this->create_client<std_srvs::srv::Empty>("/emergency_stop");
 
     // 尝试加载 URDF 并构建 pinocchio 模型（仅一次）
     namespace fs = std::filesystem;
@@ -443,21 +447,21 @@ public:
   void lPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
     if (l_real_has_new_pose_ == false){
-      l_real_latest_pose_.pose.position.x = msg->pose.position.x;
-      l_real_latest_pose_.pose.position.y = msg->pose.position.y;
-      l_real_latest_pose_.pose.position.z = msg->pose.position.z;
-      l_real_latest_pose_.pose.orientation.x = msg->pose.orientation.x;
-      l_real_latest_pose_.pose.orientation.y = msg->pose.orientation.y;
-      l_real_latest_pose_.pose.orientation.z = msg->pose.orientation.z;
-      l_real_latest_pose_.pose.orientation.w = msg->pose.orientation.w;
+      l_real_pose.pose.position.x = msg->pose.position.x;
+      l_real_pose.pose.position.y = msg->pose.position.y;
+      l_real_pose.pose.position.z = msg->pose.position.z;
+      l_real_pose.pose.orientation.x = msg->pose.orientation.x;
+      l_real_pose.pose.orientation.y = msg->pose.orientation.y;
+      l_real_pose.pose.orientation.z = msg->pose.orientation.z;
+      l_real_pose.pose.orientation.w = msg->pose.orientation.w;
       l_real_has_new_pose_ = true;
 
       // 打印接收到的信息
       RCLCPP_INFO(this->get_logger(), "\033[1;33mTCP位姿 topic: %s\n- 位置: [x: %.3f, y: %.3f, z: %.3f]\n姿态: [qx: %.3f, qy: %.3f, qz: %.3f, qw: %.3f]\033[0m", 
                   l_real_pose_subscriber_->get_topic_name(),
-                  l_real_latest_pose_.pose.position.x, l_real_latest_pose_.pose.position.y, l_real_latest_pose_.pose.position.z,
-                  l_real_latest_pose_.pose.orientation.x, l_real_latest_pose_.pose.orientation.y, 
-                  l_real_latest_pose_.pose.orientation.z, l_real_latest_pose_.pose.orientation.w
+                  l_real_pose.pose.position.x, l_real_pose.pose.position.y, l_real_pose.pose.position.z,
+                  l_real_pose.pose.orientation.x, l_real_pose.pose.orientation.y, 
+                  l_real_pose.pose.orientation.z, l_real_pose.pose.orientation.w
       );
     }
   }
@@ -706,7 +710,13 @@ public:
               // }
             }
             else {
-              l_ctl_init = false;
+              if (l_ctl_init) {
+                l_ctl_init = false;
+                RCLCPP_INFO(this->get_logger(), "\033[1;31mLeft trigger released, calling emergency stop service\033[0m");
+                auto request = std::make_shared<std_srvs::srv::Empty::Request>();
+                emergency_stop_client_->async_send_request(request);
+                RCLCPP_INFO(this->get_logger(), "\033[1;31mEmergency stop service called\033[0m");
+              }
             }
 
             if (custom_msg.right_controller.trigger == 1.0f) {
@@ -795,8 +805,10 @@ private:
 
   // 最新左臂真机姿态和相关变量
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr l_real_pose_subscriber_;
-  geometry_msgs::msg::PoseStamped l_real_latest_pose_;
   bool l_real_has_new_pose_ = false;
+
+  // 紧急停止
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr emergency_stop_client_;
 
 
   bool left_gripper = false;

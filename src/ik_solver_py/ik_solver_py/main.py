@@ -166,16 +166,16 @@ class InverseKinematicsNode(Node):
         )
         
         # 创建发布者
-        # self.joint_state_publisher = self.create_publisher(
-        #     JointState,
-        #     '/joint_states',
-        #     10
-        # )
         self.joint_state_publisher = self.create_publisher(
             JointState,
-            '/control/move_j',
+            '/joint_states',
             10
         )
+        # self.joint_state_publisher = self.create_publisher(
+        #     JointState,
+        #     '/control/move_j',
+        #     10
+        # )
         
         self.get_logger().info(f'逆运动学节点已启动，监听 /xr/move_p 话题')
         self.get_logger().info(f'关节数量: {len(self.joint_names)}')

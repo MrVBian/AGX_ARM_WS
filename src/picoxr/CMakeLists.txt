@@ -12,6 +12,7 @@ message(STATUS "OS_PLATFORM: ${ISA_NAME}")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(xr_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -44,6 +45,7 @@ target_compile_definitions(talker PRIVATE COAL_DISABLE_HPP_FCL_WARNINGS)
 ament_target_dependencies(talker
   rclcpp
   std_msgs
+  std_srvs
   sensor_msgs
   xr_msgs
   geometry_msgs
