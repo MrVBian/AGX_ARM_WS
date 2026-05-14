@@ -165,12 +165,14 @@ class InverseKinematicsNode(Node):
             10
         )
         
-        # 创建发布者
+        # sim
         self.joint_state_publisher = self.create_publisher(
             JointState,
             '/joint_states',
             10
         )
+
+        # real
         # self.joint_state_publisher = self.create_publisher(
         #     JointState,
         #     '/control/move_j',

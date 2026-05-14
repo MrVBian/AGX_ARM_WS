@@ -124,8 +124,13 @@ public:
   XRNode() : Node("xr_publisher")
   {
     publisher_ = this->create_publisher<xr_msgs::msg::Custom>("xr_pose", 10);
-    // l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/xr/move_p", 10);
-    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
+    
+    // sim
+    l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/xr/move_p", 10);
+    
+    
+    // real
+    // l_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/move_p", 10);
     r_joint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/right/control/move_p", 10);
     g_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/control/joint_states", 10);
     // l_joint_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
@@ -419,30 +424,6 @@ public:
   }
 
 
-  tf2::Quaternion convertControllerQuatToPoseQuat(double x, double y, double z, double w){
-    // 原始四元数
-    tf2::Quaternion q_ctrl(x, y, z, w);
-
-    // controller 坐标系 -> ps 坐标系 的旋转矩阵
-    tf2::Matrix3x3 R(
-        0,  0, -1,
-        -1,  0,  0,
-        0,  1,  0
-    );
-
-    // 四元数转矩阵
-    tf2::Matrix3x3 M_ctrl(q_ctrl);
-
-    // 变换：R * M * R^T
-    tf2::Matrix3x3 M_ps = R * M_ctrl * R.transpose();
-
-    // 转回四元数
-    tf2::Quaternion q_ps;
-    M_ps.getRotation(q_ps);
-
-    return q_ps;
-  }
-
 
   void lPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
@@ -558,22 +539,13 @@ public:
               ps.header.stamp = this->now();
               ps.header.frame_id = "Pico";
 
-              ps.pose.position.x = -custom_msg.left_controller.pose[2];
-              ps.pose.position.y = -custom_msg.left_controller.pose[0];
-              ps.pose.position.z =  custom_msg.left_controller.pose[1];
-
-              // 四元数转换
-              auto qconv = convertControllerQuatToPoseQuat(
-                  custom_msg.left_controller.pose[3],
-                  custom_msg.left_controller.pose[4],
-                  custom_msg.left_controller.pose[5],
-                  custom_msg.left_controller.pose[6]
-              );
-
-              ps.pose.orientation.x = qconv.x();
-              ps.pose.orientation.y = qconv.y();
-              ps.pose.orientation.z = qconv.z();
-              ps.pose.orientation.w = qconv.w();
+              ps.pose.position.x = custom_msg.left_controller.pose[0];
+              ps.pose.position.y = custom_msg.left_controller.pose[1];
+              ps.pose.position.z = custom_msg.left_controller.pose[2];
+              ps.pose.orientation.x = custom_msg.left_controller.pose[3];
+              ps.pose.orientation.y = custom_msg.left_controller.pose[4];
+              ps.pose.orientation.z = custom_msg.left_controller.pose[5];
+              ps.pose.orientation.w = custom_msg.left_controller.pose[6];
 
               if (l_ctl_init == false) {
                 // 更新真机姿态
@@ -583,19 +555,10 @@ public:
                 l_ctl_init_pose.pose.position.x = ps.pose.position.x;
                 l_ctl_init_pose.pose.position.y = ps.pose.position.y;
                 l_ctl_init_pose.pose.position.z = ps.pose.position.z;
-                l_ctl_init_pose.pose.orientation.x = qconv.x();
-                l_ctl_init_pose.pose.orientation.y = qconv.y();
-                l_ctl_init_pose.pose.orientation.z = qconv.z();
-                l_ctl_init_pose.pose.orientation.w = qconv.w();
-                // l_real_pose.header.stamp = ps.header.stamp;
-                // l_real_pose.header.frame_id = "Real";
-                // l_real_pose.pose.position.x = 0.2;
-                // l_real_pose.pose.position.y = 0.0;
-                // l_real_pose.pose.position.z = 0.3;
-                // l_real_pose.pose.orientation.x = 0.0;
-                // l_real_pose.pose.orientation.y = 0.6755837736314217;
-                // l_real_pose.pose.orientation.z = 0.0;
-                // l_real_pose.pose.orientation.w = 0.7372832324188093;
+                l_ctl_init_pose.pose.orientation.x = ps.pose.orientation.x;
+                l_ctl_init_pose.pose.orientation.y = ps.pose.orientation.y;
+                l_ctl_init_pose.pose.orientation.z = ps.pose.orientation.z;
+                l_ctl_init_pose.pose.orientation.w = ps.pose.orientation.w;
                 l_ctl_init = true;
 
                 RCLCPP_INFO(this->get_logger(), 
@@ -606,78 +569,166 @@ public:
                 );
               }
               else if(l_ctl_init == true && l_real_has_new_pose_ == true) {
-                geometry_msgs::msg::PoseStamped ps_diff;
 
-                // 计算位置差值
-                float x_diff = ps.pose.position.x - l_ctl_init_pose.pose.position.x;
-                float y_diff = ps.pose.position.y - l_ctl_init_pose.pose.position.y;
-                float z_diff = ps.pose.position.z - l_ctl_init_pose.pose.position.z;
-                
-                ps_diff.pose.position.x = x_diff + l_real_pose.pose.position.x;
-                ps_diff.pose.position.y = y_diff + l_real_pose.pose.position.y;
-                ps_diff.pose.position.z = z_diff + l_real_pose.pose.position.z;
 
-                // 表格形式输出计算过程
-                RCLCPP_INFO(this->get_logger(), 
-                  "\033[1;36m topic: %s\n"
-                  "┌─────────────────────────────────────────────────────────┐\n"
-                  "│              POSITION CALCULATION TABLE                  │\n"
-                  "├─────────────────┬──────────┬──────────┬──────────┬───────┤\n"
-                  "│   Component     │     X    │     Y    │     Z    │ Units │\n"
-                  "├─────────────────┼──────────┼──────────┼──────────┼───────┤\n"
-                  "│ Current Ctrl    │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
-                  "│ Init Ctrl       │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
-                  "│ Difference      │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
-                  "│ Real Base       │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
-                  "│ Final Result    │ %8.3f │ %8.3f │ %8.3f │  m    │\n"
-                  "└─────────────────┴──────────┴──────────┴──────────┴───────┘\033[0m",
-                  l_joint_publisher_->get_topic_name(),
-                  ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
-                  l_ctl_init_pose.pose.position.x, l_ctl_init_pose.pose.position.y, l_ctl_init_pose.pose.position.z,
-                  x_diff, y_diff, z_diff,
-                  l_real_pose.pose.position.x, l_real_pose.pose.position.y, l_real_pose.pose.position.z,
-                  ps_diff.pose.position.x, ps_diff.pose.position.y, ps_diff.pose.position.z
-                );
 
-                // 获取初始控制器姿态的四元数
-                Eigen::Quaterniond q_init(
-                    l_ctl_init_pose.pose.orientation.w,
-                    l_ctl_init_pose.pose.orientation.x,
-                    l_ctl_init_pose.pose.orientation.y,
-                    l_ctl_init_pose.pose.orientation.z
-                );
-                
-                // 获取当前控制器姿态的四元数
-                Eigen::Quaterniond q_current(qconv);
-                
-                // 计算四元数差值：q_diff = q_init^-1 * q_current
-                Eigen::Quaterniond q_diff = q_init.inverse() * q_current;
-                q_diff.normalize();
-                
-                // 获取真实初始姿态的四元数
-                Eigen::Quaterniond q_real_init(
-                    l_real_pose.pose.orientation.w,
-                    l_real_pose.pose.orientation.x,
-                    l_real_pose.pose.orientation.y,
-                    l_real_pose.pose.orientation.z
-                );
-                
-                // 将差值应用到真实初始姿态上：q_result = q_real_init * q_diff
-                Eigen::Quaterniond q_result = q_real_init * q_diff;
-                q_result.normalize();
-                
-                // 设置结果姿态
-                ps_diff.pose.orientation.x = q_result.x();
-                ps_diff.pose.orientation.y = q_result.y();
-                ps_diff.pose.orientation.z = q_result.z();
-                ps_diff.pose.orientation.w = q_result.w();
-                
-                // 设置时间戳和坐标系
-                ps_diff.header.stamp = this->now();
-                ps_diff.header.frame_id = "Real";  // 或者你想要的坐标系
-                
-                // 发布结果
-                l_joint_publisher_->publish(ps_diff);
+
+
+
+
+
+
+
+
+  // 把控制器(右手系x右，y上，z后)里的移动和旋转，"翻译"成真实世界(右手系x前，y左，z上)里的动作
+  // 然后叠加到当前的物体位置上，最后发布这个结果result
+  
+  // 1. 计算控制器相对于初始位置的位移
+  double dx_ctl = ps.pose.position.x - l_ctl_init_pose.pose.position.x;
+  double dy_ctl = ps.pose.position.y - l_ctl_init_pose.pose.position.y;
+  double dz_ctl = ps.pose.position.z - l_ctl_init_pose.pose.position.z;
+  
+  // 2. 将控制器位移转换到真实世界坐标系
+  // 控制器x+ -> 真实世界y-
+  // 控制器y+ -> 真实世界z+
+  // 控制器z+ -> 真实世界x-
+  double dx_real = -dz_ctl;  // 控制器z+ -> 真实世界x-
+  double dy_real = -dx_ctl;  // 控制器x+ -> 真实世界y-
+  double dz_real = dy_ctl;   // 控制器y+ -> 真实世界z+
+  
+  // 3. 计算旋转变换
+  // 获取控制器初始和当前的四元数
+  tf2::Quaternion q_ctl_init(
+    l_ctl_init_pose.pose.orientation.x,
+    l_ctl_init_pose.pose.orientation.y,
+    l_ctl_init_pose.pose.orientation.z,
+    l_ctl_init_pose.pose.orientation.w
+  );
+  
+  tf2::Quaternion q_ctl_current(
+    ps.pose.orientation.x,
+    ps.pose.orientation.y,
+    ps.pose.orientation.z,
+    ps.pose.orientation.w
+  );
+  
+// 计算相对旋转：从初始到当前的旋转
+tf2::Quaternion q_ctl_rel = q_ctl_init.inverse() * q_ctl_current;
+q_ctl_rel.normalize();
+
+// 4. 将控制器坐标系的旋转转换到真实世界坐标系
+// 使用旋转矩阵方法（更可靠）
+
+// 控制器坐标系到真实世界坐标系的旋转变换矩阵
+// 控制器: x右, y上, z后
+// 真实世界: x前, y左, z上
+// 这个变换矩阵表示从控制器坐标系到真实世界坐标系的变换
+tf2::Matrix3x3 R_ctl_to_real;
+R_ctl_to_real.setValue(
+  0, 0, -1,  // 控制器x轴(1,0,0) -> 真实世界(0,-1,0) -> 第1列
+  -1, 0, 0,  // 控制器y轴(0,1,0) -> 真实世界(0,0,1) -> 第2列
+  0, 1, 0    // 控制器z轴(0,0,1) -> 真实世界(-1,0,0) -> 第3列
+);
+
+// 将相对旋转转换为旋转矩阵
+tf2::Matrix3x3 R_ctl_rel;
+R_ctl_rel.setRotation(q_ctl_rel);
+
+// 将旋转从控制器坐标系转换到真实世界坐标系
+// 使用相似变换公式: R_real = R_ctl_to_real * R_ctl * R_ctl_to_real^-1
+// 但这里R_ctl_to_real是正交矩阵，所以逆等于转置
+tf2::Matrix3x3 R_ctl_to_real_T = R_ctl_to_real.transpose();
+tf2::Matrix3x3 R_real_rel = R_ctl_to_real * R_ctl_rel * R_ctl_to_real_T;
+
+// 转换回四元数
+tf2::Quaternion q_real_rel;
+R_real_rel.getRotation(q_real_rel);
+q_real_rel.normalize();
+
+// 5. 叠加到当前的物体位置
+geometry_msgs::msg::PoseStamped result;
+result.header.stamp = this->now();
+result.header.frame_id = "real";
+
+// 计算新的位置
+result.pose.position.x = l_real_pose.pose.position.x + dx_real;
+result.pose.position.y = l_real_pose.pose.position.y + dy_real;
+result.pose.position.z = l_real_pose.pose.position.z + dz_real;
+
+// 计算新的方向
+tf2::Quaternion q_real_current(
+  l_real_pose.pose.orientation.x,
+  l_real_pose.pose.orientation.y,
+  l_real_pose.pose.orientation.z,
+  l_real_pose.pose.orientation.w
+);
+
+// 旋转叠加：这里使用右乘，表示相对旋转是在物体坐标系中应用的
+// 如果y轴旋转方向反了，可以尝试使用左乘
+tf2::Quaternion q_real_new = q_real_current * q_real_rel;
+q_real_new.normalize();
+
+// 调试：检查旋转轴
+// 获取四元数的旋转轴和角度
+tf2::Vector3 axis_ctl = q_ctl_rel.getAxis();
+double angle_ctl = q_ctl_rel.getAngle();
+
+tf2::Vector3 axis_real = q_real_rel.getAxis();
+double angle_real = q_real_rel.getAngle();
+
+RCLCPP_INFO(this->get_logger(),
+  "\033[1;33m[LEFT CTRL DEBUG]\033[0m\n"
+  "┌──────────────────────────────────┬─────────────────────────────────────────────────────────┐\n"
+  "│ Controller offset                │ dx:%9.6f  dy:%9.6f  dz:%9.6f │\n"
+  "│ Transformed to real              │ dx:%9.6f  dy:%9.6f  dz:%9.6f │\n"
+  "├──────────────────────────────────┼─────────────────────────────────────────────────────────┤\n"
+  "│ Controller rel rotation          │ axis:[%6.3f, %6.3f, %6.3f] angle:%6.3f │\n"
+  "│ Real world rel rotation          │ axis:[%6.3f, %6.3f, %6.3f] angle:%6.3f │\n"
+  "├──────────────────────────────────┼─────────────────────────────────────────────────────────┤\n"
+  "│ Real world current pos           │ x:%9.6f  y:%9.6f  z:%9.6f │\n"
+  "│ Real world new pos               │ x:%9.6f  y:%9.6f  z:%9.6f │\n"
+  "│ Real world new quat              │ x:%9.6f  y:%9.6f  z:%9.6f  w:%9.6f │\n"
+  "└──────────────────────────────────┴─────────────────────────────────────────────────────────┘",
+  dx_ctl, dy_ctl, dz_ctl,
+  dx_real, dy_real, dz_real,
+  axis_ctl.x(), axis_ctl.y(), axis_ctl.z(), angle_ctl,
+  axis_real.x(), axis_real.y(), axis_real.z(), angle_real,
+  l_real_pose.pose.position.x, l_real_pose.pose.position.y, l_real_pose.pose.position.z,
+  result.pose.position.x, result.pose.position.y, result.pose.position.z,
+  q_real_new.x(), q_real_new.y(), q_real_new.z(), q_real_new.w()
+);
+
+result.pose.orientation.x = q_real_new.x();
+result.pose.orientation.y = q_real_new.y();
+result.pose.orientation.z = q_real_new.z();
+result.pose.orientation.w = q_real_new.w();
+
+l_joint_publisher_->publish(result);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
               }
 
               // // 求逆解
@@ -720,35 +771,7 @@ public:
             }
 
             if (custom_msg.right_controller.trigger == 1.0f) {
-              geometry_msgs::msg::PoseStamped ps;
-              ps.header.stamp = this->now();
-              ps.header.frame_id = "Pico";
-
-              ps.pose.position.x = -custom_msg.right_controller.pose[2];
-              ps.pose.position.y = -custom_msg.right_controller.pose[0];
-              ps.pose.position.z =  custom_msg.right_controller.pose[1];
-
-              // 四元数转换
-              auto qconv = convertControllerQuatToPoseQuat(
-                  custom_msg.right_controller.pose[3],
-                  custom_msg.right_controller.pose[4],
-                  custom_msg.right_controller.pose[5],
-                  custom_msg.right_controller.pose[6]
-              );
-
-              ps.pose.orientation.x = qconv.x();
-              ps.pose.orientation.y = qconv.y();
-              ps.pose.orientation.z = qconv.z();
-              ps.pose.orientation.w = qconv.w();
-
-              if (ps.pose.position.z > 0.1f)
-                r_joint_publisher_->publish(ps);
-
-              RCLCPP_INFO(this->get_logger(), "Right controller pose: [%f, %f, %f, %f, %f, %f, %f]",
-                ps.pose.position.x, ps.pose.position.y, ps.pose.position.z,
-                ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
-                ps.pose.orientation.w
-              );
+              
             }
 
             if (custom_msg.left_controller.gripper == 1.0f && left_gripper == false) {
