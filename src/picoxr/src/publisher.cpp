@@ -612,35 +612,55 @@ public:
     ps.pose.orientation.w
   );
   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // 计算相对旋转：从初始到当前的旋转
 tf2::Quaternion q_ctl_rel = q_ctl_init.inverse() * q_ctl_current;
 q_ctl_rel.normalize();
 
 // 4. 将控制器坐标系的旋转转换到真实世界坐标系
-// 使用旋转矩阵方法（更可靠）
-
-// 控制器坐标系到真实世界坐标系的旋转变换矩阵
-// 控制器: x右, y上, z后
-// 真实世界: x前, y左, z上
-// 这个变换矩阵表示从控制器坐标系到真实世界坐标系的变换
-tf2::Matrix3x3 R_ctl_to_real;
-R_ctl_to_real.setValue(
-  0, 0, -1,  // 控制器x轴(1,0,0) -> 真实世界(0,-1,0) -> 第1列
-  -1, 0, 0,  // 控制器y轴(0,1,0) -> 真实世界(0,0,1) -> 第2列
-  0, 1, 0    // 控制器z轴(0,0,1) -> 真实世界(-1,0,0) -> 第3列
+// 使用旋转矩阵转换而不是欧拉角转换，避免万向节锁和顺序问题
+// 定义从控制器坐标系到真实世界坐标系的旋转矩阵
+// 根据坐标轴映射关系：控制器(x右,y上,z后) -> 真实世界(x前,y左,z上)
+// 控制器x轴(右) -> 真实世界y轴负方向(左)
+// 控制器y轴(上) -> 真实世界z轴(上)
+// 控制器z轴(后) -> 真实世界x轴负方向(后)
+tf2::Matrix3x3 R_ctl_to_real(
+  0, 0, -1,  // 控制器x轴(1,0,0)映射到真实世界(0,0,-1) -> 但实际上是y-，见下面
+  -1, 0, 0,  // 控制器y轴(0,1,0)映射到真实世界(-1,0,0) -> 但实际上是z+，见下面
+  0, 1, 0   // 控制器z轴(0,0,1)映射到真实世界(0,1,0) -> 但实际上是x-，见下面
 );
+// 修正：上面的矩阵不对，我们需要仔细映射
+// 实际上，控制器的基向量在真实世界中的表示为：
+// 控制器x(1,0,0) -> 真实世界(0,-1,0) 即y-
+// 控制器y(0,1,0) -> 真实世界(0,0,1) 即z+
+// 控制器z(0,0,1) -> 真实世界(-1,0,0) 即x-
+// 所以正确的旋转矩阵R_ctl_to_real为：
+// [ 0,  0, -1 ]
+// [-1,  0,  0 ]
+// [ 0,  1,  0 ]
 
-// 将相对旋转转换为旋转矩阵
-tf2::Matrix3x3 R_ctl_rel;
-R_ctl_rel.setRotation(q_ctl_rel);
+// 将控制器的相对旋转转换为旋转矩阵
+tf2::Matrix3x3 R_ctl_rel(q_ctl_rel);
 
-// 将旋转从控制器坐标系转换到真实世界坐标系
-// 使用相似变换公式: R_real = R_ctl_to_real * R_ctl * R_ctl_to_real^-1
-// 但这里R_ctl_to_real是正交矩阵，所以逆等于转置
-tf2::Matrix3x3 R_ctl_to_real_T = R_ctl_to_real.transpose();
-tf2::Matrix3x3 R_real_rel = R_ctl_to_real * R_ctl_rel * R_ctl_to_real_T;
+// 将控制器坐标系中的旋转矩阵转换到真实世界坐标系
+// 公式: R_real_rel = R_ctl_to_real * R_ctl_rel * R_ctl_to_real.transpose()
+tf2::Matrix3x3 R_real_rel = R_ctl_to_real * R_ctl_rel * R_ctl_to_real.transpose();
 
-// 转换回四元数
+// 将旋转矩阵转换回四元数
 tf2::Quaternion q_real_rel;
 R_real_rel.getRotation(q_real_rel);
 q_real_rel.normalize();
@@ -663,9 +683,8 @@ tf2::Quaternion q_real_current(
   l_real_pose.pose.orientation.w
 );
 
-// 旋转叠加：这里使用右乘，表示相对旋转是在物体坐标系中应用的
-// 如果y轴旋转方向反了，可以尝试使用左乘
-tf2::Quaternion q_real_new = q_real_current * q_real_rel;
+// 旋转叠加：在全局坐标系中应用相对旋转
+tf2::Quaternion q_real_new = q_real_rel * q_real_current;
 q_real_new.normalize();
 
 // 调试：检查旋转轴
@@ -676,11 +695,21 @@ double angle_ctl = q_ctl_rel.getAngle();
 tf2::Vector3 axis_real = q_real_rel.getAxis();
 double angle_real = q_real_rel.getAngle();
 
+// 为了调试，也计算欧拉角
+double roll_ctl, pitch_ctl, yaw_ctl;
+tf2::Matrix3x3(q_ctl_rel).getRPY(roll_ctl, pitch_ctl, yaw_ctl);
+
+double roll_real, pitch_real, yaw_real;
+tf2::Matrix3x3(q_real_rel).getRPY(roll_real, pitch_real, yaw_real);
+
 RCLCPP_INFO(this->get_logger(),
   "\033[1;33m[LEFT CTRL DEBUG]\033[0m\n"
   "┌──────────────────────────────────┬─────────────────────────────────────────────────────────┐\n"
   "│ Controller offset                │ dx:%9.6f  dy:%9.6f  dz:%9.6f │\n"
   "│ Transformed to real              │ dx:%9.6f  dy:%9.6f  dz:%9.6f │\n"
+  "├──────────────────────────────────┼─────────────────────────────────────────────────────────┤\n"
+  "│ Controller RPY (rad)            │ roll:%7.4f pitch:%7.4f yaw:%7.4f │\n"
+  "│ Real world RPY (rad)            │ roll:%7.4f pitch:%7.4f yaw:%7.4f │\n"
   "├──────────────────────────────────┼─────────────────────────────────────────────────────────┤\n"
   "│ Controller rel rotation          │ axis:[%6.3f, %6.3f, %6.3f] angle:%6.3f │\n"
   "│ Real world rel rotation          │ axis:[%6.3f, %6.3f, %6.3f] angle:%6.3f │\n"
@@ -691,6 +720,8 @@ RCLCPP_INFO(this->get_logger(),
   "└──────────────────────────────────┴─────────────────────────────────────────────────────────┘",
   dx_ctl, dy_ctl, dz_ctl,
   dx_real, dy_real, dz_real,
+  roll_ctl, pitch_ctl, yaw_ctl,
+  roll_real, pitch_real, yaw_real,
   axis_ctl.x(), axis_ctl.y(), axis_ctl.z(), angle_ctl,
   axis_real.x(), axis_real.y(), axis_real.z(), angle_real,
   l_real_pose.pose.position.x, l_real_pose.pose.position.y, l_real_pose.pose.position.z,
@@ -877,6 +908,136 @@ private:
 
 int main(int argc, char * argv[])
 {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//    // 3. 计算旋转变换
+//   // 获取控制器初始和当前的四元数
+//   // 180 90 0
+//   tf2::Quaternion q_ctl_init(
+//     0,
+//     0,
+//     0,
+//     1
+//   );
+  
+//   tf2::Quaternion q_ctl_current(
+//     0,
+//     0,
+//     0.259,
+//     0.966
+//   );
+  
+
+
+
+
+
+
+
+// // 计算相对旋转：从初始到当前的旋转
+// tf2::Quaternion q_ctl_rel = q_ctl_init.inverse() * q_ctl_current;
+// q_ctl_rel.normalize();
+
+// // 4. 将控制器坐标系的旋转转换到真实世界坐标系
+// // 关键：这不是相似变换，而是坐标轴的重映射！
+// // 控制器: 绕x+旋转 -> 真实世界: 绕y-旋转
+// // 控制器: 绕y+旋转 -> 真实世界: 绕z+旋转
+// // 控制器: 绕z+旋转 -> 真实世界: 绕x-旋转
+
+// // 从四元数中提取欧拉角（更容易理解转换）
+// double roll_ctl, pitch_ctl, yaw_ctl;
+// tf2::Matrix3x3(q_ctl_rel).getRPY(roll_ctl, pitch_ctl, yaw_ctl);
+
+// // 根据映射关系转换欧拉角：
+// // 控制器roll(绕x) -> 真实世界pitch(绕y)，但方向相反
+// // 控制器pitch(绕y) -> 真实世界yaw(绕z)
+// // 控制器yaw(绕z) -> 真实世界roll(绕x)，但方向相反
+// double roll_real = -yaw_ctl;   // 控制器z+旋转 -> 真实世界x-旋转
+// double pitch_real = -roll_ctl; // 控制器x+旋转 -> 真实世界y-旋转
+// double yaw_real = pitch_ctl;  // 控制器y+旋转 -> 真实世界z+旋转
+
+// // 将转换后的欧拉角转换回四元数
+// tf2::Quaternion q_real_rel;
+// q_real_rel.setRPY(roll_real, pitch_real, yaw_real);
+// q_real_rel.normalize();
+
+
+// // 计算新的方向
+// tf2::Quaternion q_real_current(
+//   0,
+//   0,
+//   0,
+//   1
+// );
+
+// // 旋转叠加：在全局坐标系中应用相对旋转
+// tf2::Quaternion q_real_new = q_real_rel * q_real_current;
+// q_real_new.normalize();
+
+// // 调试：检查旋转轴
+// // 获取四元数的旋转轴和角度
+// tf2::Vector3 axis_ctl = q_ctl_rel.getAxis();
+// double angle_ctl = q_ctl_rel.getAngle();
+
+// tf2::Vector3 axis_real = q_real_rel.getAxis();
+// double angle_real = q_real_rel.getAngle();
+
+// printf(
+//   "\033[1;33m[LEFT CTRL DEBUG]\033[0m\n"
+//   "┌──────────────────────────────────┬─────────────────────────────────────────────────────────┐\n"
+//   "│ Controller RPY (rad)            │ roll:%7.4f pitch:%7.4f yaw:%7.4f │\n"
+//   "│ Real world RPY (rad)            │ roll:%7.4f pitch:%7.4f yaw:%7.4f │\n"
+//   "├──────────────────────────────────┼─────────────────────────────────────────────────────────┤\n"
+//   "│ Controller rel rotation          │ axis:[%6.3f, %6.3f, %6.3f] angle:%6.3f │\n"
+//   "│ Real world rel rotation          │ axis:[%6.3f, %6.3f, %6.3f] angle:%6.3f │\n"
+//   "├──────────────────────────────────┼─────────────────────────────────────────────────────────┤\n"
+//   "│ Real world new quat              │ x:%9.6f  y:%9.6f  z:%9.6f  w:%9.6f │\n"
+//   "└──────────────────────────────────┴─────────────────────────────────────────────────────────┘\n",
+//   roll_ctl, pitch_ctl, yaw_ctl,
+//   roll_real, pitch_real, yaw_real,
+//   axis_ctl.x(), axis_ctl.y(), axis_ctl.z(), angle_ctl,
+//   axis_real.x(), axis_real.y(), axis_real.z(), angle_real,
+//   q_real_new.x(), q_real_new.y(), q_real_new.z(), q_real_new.w()
+// );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   rclcpp::init(argc, argv);
 
   auto xrNode = std::make_shared<XRNode>();
